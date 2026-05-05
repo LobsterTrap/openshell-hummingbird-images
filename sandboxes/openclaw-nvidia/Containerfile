@@ -1,0 +1,74 @@
+# syntax=docker/dockerfile:1
+
+# SPDX-License-Identifier: Apache-2.0
+
+# NeMoClaw Sandbox (openclaw-nvidia) — Hummingbird Edition
+#
+# Builds on the Hummingbird-based OpenClaw sandbox and adds the NeMoClaw
+# DevX UI extension (model selector, deploy modal, API keys page, nav group).
+#
+# IMPORTANT: Before building, run `scripts/sync-upstream.sh` to populate
+# the support files (policy-proxy.js, inference-options.js, proto/, nemoclaw-ui-extension/).
+#
+# Build:  docker build -t openclaw-nvidia sandboxes/openclaw-nvidia/
+# Run:    openshell sandbox create --name openclaw-nvidia --from openclaw-nvidia --forward 18789 -- openclaw-nvidia-start
+
+ARG BASE_IMAGE=ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+# jq — Fedora package name is the same as Ubuntu
+RUN dnf install -y --setopt=install_weak_deps=False jq && \
+    dnf clean all && rm -rf /var/cache/dnf
+
+# Sandbox policy
+COPY policy.yaml /etc/openshell/policy.yaml
+
+# Startup script with runtime API key injection
+COPY openclaw-nvidia-start.sh /usr/local/bin/openclaw-nvidia-start
+RUN chmod +x /usr/local/bin/openclaw-nvidia-start
+
+# Policy reverse proxy and inference options (synced from upstream)
+COPY policy-proxy.js /usr/local/lib/policy-proxy.js
+COPY inference-options.js /usr/local/lib/inference-options.js
+COPY proto/ /usr/local/lib/nemoclaw-proto/
+RUN npm install -g @grpc/grpc-js @grpc/proto-loader js-yaml
+
+# Fix @hono/node-server authorization bypass
+RUN npm install -g @hono/node-server@1.19.11
+
+# Allow sandbox user to read the default policy
+RUN mkdir -p /etc/openshell && chown -R sandbox:sandbox /etc/openshell
+
+# NeMoClaw DevX extension: bundle with esbuild and inject into OpenClaw UI
+COPY nemoclaw-ui-extension/extension/ /opt/nemoclaw-devx/
+RUN set -e; \
+    npm install -g esbuild; \
+    cd /opt/nemoclaw-devx && npm install --production; \
+    UI_DIR="$(npm root -g)/openclaw/dist/control-ui"; \
+    esbuild /opt/nemoclaw-devx/index.ts \
+    --bundle \
+    --format=esm \
+    --outfile="$UI_DIR/assets/nemoclaw-devx.js"; \
+    HASH=$(md5sum "$UI_DIR/assets/nemoclaw-devx.js" | cut -c1-8); \
+    sed -i "s|</head>|<link rel=\"stylesheet\" href=\"./assets/nemoclaw-devx.css?v=${HASH}\">\n</head>|" "$UI_DIR/index.html"; \
+    sed -i "s|</head>|<script type=\"module\" src=\"./assets/nemoclaw-devx.js?v=${HASH}\"></script>\n</head>|" "$UI_DIR/index.html"; \
+    npm uninstall -g esbuild; \
+    rm -rf /opt/nemoclaw-devx/node_modules
+
+# Fix transitive tar vulnerabilities
+RUN npm install -g tar@7.5.11 && \
+    npm --prefix "$(npm root -g)/openclaw" update tar
+
+# Agent skills (network policy fail-fast)
+COPY skills/ /sandbox/.agents/skills/
+RUN for skill in /sandbox/.agents/skills/*/; do \
+      [ -d "$skill" ] || continue; \
+      ln -sf "$skill" "/sandbox/.claude/skills/$(basename "$skill")"; \
+    done && \
+    chown -R sandbox:sandbox /sandbox/.agents/skills /sandbox/.claude/skills
+
+USER sandbox
+
+ENTRYPOINT ["/bin/bash"]

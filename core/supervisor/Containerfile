@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+
+# SPDX-License-Identifier: Apache-2.0
+
+# OpenShell Supervisor — Hummingbird Edition
+#
+# Rebased onto quay.io/hummingbird/core-runtime (distroless, near-zero CVE).
+# Original base: nvcr.io/nvidia/base/ubuntu:noble-20251013
+#
+# The supervisor binary is staged by CI before the image build:
+#   .build/binaries/<arch>/openshell-sandbox
+#
+# Build (after staging binary):
+#   docker buildx build -f core/supervisor/Containerfile -t supervisor .
+
+# ---------------------------------------------------------------------------
+# Builder stage: create openshell user (distroless has no useradd)
+# ---------------------------------------------------------------------------
+FROM quay.io/hummingbird/core-runtime:latest-builder AS usersetup
+
+RUN useradd --create-home --user-group --uid 1001 openshell
+
+# ---------------------------------------------------------------------------
+# Final supervisor image (distroless)
+# ---------------------------------------------------------------------------
+FROM quay.io/hummingbird/core-runtime:latest
+
+ARG TARGETARCH
+
+# Import user/group entries from builder
+COPY --from=usersetup /etc/passwd /etc/passwd
+COPY --from=usersetup /etc/group /etc/group
+COPY --from=usersetup /etc/shadow /etc/shadow
+COPY --from=usersetup --chown=1001:1001 /home/openshell /home/openshell
+
+WORKDIR /app
+
+# Supervisor binary (pre-built by CI for the target arch)
+COPY --chmod=755 .build/binaries/${TARGETARCH}/openshell-sandbox /usr/local/bin/openshell-sandbox
+
+USER openshell
+
+ENTRYPOINT ["openshell-sandbox"]

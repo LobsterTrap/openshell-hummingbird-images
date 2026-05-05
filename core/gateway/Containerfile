@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1
+
+# SPDX-License-Identifier: Apache-2.0
+
+# OpenShell Gateway — Hummingbird Edition
+#
+# Rebased onto quay.io/hummingbird/core-runtime (distroless, near-zero CVE).
+# Original base: nvcr.io/nvidia/base/ubuntu:noble-20251013
+#
+# The gateway binary and migrations are staged by CI before the image build:
+#   .build/binaries/<arch>/openshell-gateway
+#   .build/migrations/
+#
+# Build (after staging binaries):
+#   docker buildx build -f core/gateway/Containerfile -t gateway .
+
+# ---------------------------------------------------------------------------
+# Builder stage: create openshell user (distroless has no useradd)
+# ---------------------------------------------------------------------------
+FROM quay.io/hummingbird/core-runtime:latest-builder AS usersetup
+
+RUN useradd --create-home --user-group --uid 1001 openshell
+
+# ---------------------------------------------------------------------------
+# Final gateway image (distroless)
+# ---------------------------------------------------------------------------
+FROM quay.io/hummingbird/core-runtime:latest
+
+ARG TARGETARCH
+
+# Import user/group entries from builder
+COPY --from=usersetup /etc/passwd /etc/passwd
+COPY --from=usersetup /etc/group /etc/group
+COPY --from=usersetup /etc/shadow /etc/shadow
+COPY --from=usersetup --chown=1001:1001 /home/openshell /home/openshell
+
+WORKDIR /app
+
+# Gateway binary (pre-built by CI for the target arch)
+COPY --chmod=755 .build/binaries/${TARGETARCH}/openshell-gateway /usr/local/bin/openshell-gateway
+
+# SQL migrations (needed at runtime by the gateway).
+# Path matches upstream layout expected by the openshell-gateway binary.
+COPY --chmod=644 .build/migrations /build/crates/openshell-server/migrations
+
+USER openshell
+EXPOSE 8080
+
+ENTRYPOINT ["openshell-gateway"]
+CMD ["--bind-address", "0.0.0.0", "--port", "8080"]

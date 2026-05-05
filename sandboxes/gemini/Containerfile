@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1
+
+# SPDX-License-Identifier: Apache-2.0
+
+# Gemini CLI Sandbox — Hummingbird Edition
+#
+# Builds on the Hummingbird-based community base sandbox and adds Google Gemini CLI.
+#
+# Build:  docker build -t openshell-gemini --build-arg BASE_IMAGE=openshell-base sandboxes/gemini/
+# Run:    openshell sandbox create --from gemini
+
+ARG BASE_IMAGE=ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/base:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Install Gemini CLI (pinned for reproducibility)
+RUN npm install -g @google/gemini-cli@0.35.0
+
+# Copy sandbox policy
+COPY policy.yaml /etc/openshell/policy.yaml
+
+# Create Gemini config directory
+RUN mkdir -p /sandbox/.gemini && \
+    chown sandbox:sandbox /sandbox/.gemini
+
+USER sandbox
+
+ENTRYPOINT ["/bin/bash"]

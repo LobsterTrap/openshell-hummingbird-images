@@ -1,0 +1,188 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag to release (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build all core images
+  # ---------------------------------------------------------------------------
+  build-core:
+    name: Build Core Images
+    uses: ./.github/workflows/build-core.yml
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Build all sandbox images
+  # ---------------------------------------------------------------------------
+  build-sandboxes:
+    name: Build Sandbox Images
+    uses: ./.github/workflows/build-sandboxes.yml
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Smoke test
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Verify Images
+    needs: [build-core, build-sandboxes]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Lowercase image prefix
+        id: repo
+        run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test core images
+        run: |
+          set -euo pipefail
+          REGISTRY="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}"
+
+          echo "--- Testing gateway ---"
+          docker run --rm "${REGISTRY}/gateway:${{ github.sha }}" --version
+
+          echo "--- Testing supervisor ---"
+          docker run --rm "${REGISTRY}/supervisor:${{ github.sha }}" --version
+
+      - name: Smoke test sandbox base
+        run: |
+          set -euo pipefail
+          REGISTRY="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}"
+
+          echo "--- Testing sandboxes/base ---"
+          docker run --rm "${REGISTRY}/sandboxes/base:${{ github.sha }}" -c "
+            node --version && \
+            python3 --version && \
+            gh --version && \
+            claude --version && \
+            opencode --version && \
+            echo 'All tools verified'
+          "
+
+  # ---------------------------------------------------------------------------
+  # Tag images with release version
+  # ---------------------------------------------------------------------------
+  tag-release:
+    name: Tag Release Images
+    needs: [build-core, build-sandboxes, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Lowercase image prefix
+        id: repo
+        run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute semver
+        id: version
+        run: echo "semver=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag all images with version and latest
+        run: |
+          set -euo pipefail
+          REGISTRY="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}"
+          VERSION="${{ steps.version.outputs.semver }}"
+
+          IMAGES=(
+            "gateway"
+            "supervisor"
+            "sandboxes/base"
+            "sandboxes/openclaw"
+            "sandboxes/openclaw-nvidia"
+            "sandboxes/ollama"
+            "sandboxes/gemini"
+            "sandboxes/droid"
+          )
+
+          for image in "${IMAGES[@]}"; do
+            echo "Tagging ${REGISTRY}/${image}:${{ github.sha }} -> ${VERSION}, latest"
+            docker buildx imagetools create \
+              --prefer-index=false \
+              -t "${REGISTRY}/${image}:${VERSION}" \
+              "${REGISTRY}/${image}:${{ github.sha }}" || \
+              echo "Warning: could not tag ${image} (may not have been built)"
+
+            docker buildx imagetools create \
+              --prefer-index=false \
+              -t "${REGISTRY}/${image}:latest" \
+              "${REGISTRY}/${image}:${{ github.sha }}" || \
+              echo "Warning: could not tag ${image} (may not have been built)"
+          done
+
+  # ---------------------------------------------------------------------------
+  # Create GitHub Release
+  # ---------------------------------------------------------------------------
+  release:
+    name: Create GitHub Release
+    needs: tag-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lowercase image prefix
+        id: repo
+        run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute semver
+        id: version
+        run: echo "semver=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: OpenShell Hummingbird Images ${{ env.RELEASE_TAG }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          body: |
+            ## OpenShell Hummingbird Images ${{ env.RELEASE_TAG }}
+
+            Container images for OpenShell rebased onto Project Hummingbird hardened base images.
+
+            ### Images
+
+            ```
+            # Core infrastructure (distroless)
+            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/gateway:${{ steps.version.outputs.semver }}
+            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/supervisor:${{ steps.version.outputs.semver }}
+
+            # Sandbox images (builder)
+            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/base:${{ steps.version.outputs.semver }}
+            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw:${{ steps.version.outputs.semver }}
+            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw-nvidia:${{ steps.version.outputs.semver }}
+            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/ollama:${{ steps.version.outputs.semver }}
+            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/gemini:${{ steps.version.outputs.semver }}
+            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/droid:${{ steps.version.outputs.semver }}
+            ```
+
+            ### Base Images
+
+            - Core: `quay.io/hummingbird/core-runtime` (distroless)
+            - Sandboxes: `quay.io/hummingbird/nodejs:22-builder`

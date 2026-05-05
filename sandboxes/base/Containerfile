@@ -1,0 +1,148 @@
+# syntax=docker/dockerfile:1
+
+# SPDX-License-Identifier: Apache-2.0
+
+# OpenShell Community Base Sandbox — Hummingbird Edition
+#
+# Rebased onto quay.io/hummingbird/nodejs:22-builder (Fedora Rawhide, hardened).
+# Original base: nvcr.io/nvidia/base/ubuntu:noble-20251013
+#
+# This is the foundational sandbox image. All other community sandbox images
+# (openclaw, ollama, gemini, droid) build on top of this.
+#
+# Key differences from upstream:
+#   - Package manager: dnf (Fedora) instead of apt-get (Ubuntu)
+#   - Node.js 22: pre-installed via Hummingbird base (no NodeSource repo)
+#   - System packages: Fedora equivalents (see package translation table in PLAN.md)
+#   - Library paths: /usr/lib64 (Fedora) vs /usr/lib (Ubuntu) for 64-bit
+#
+# Build:  docker build -f sandboxes/base/Containerfile -t openshell-base sandboxes/base/
+
+# ---- System base ----
+FROM quay.io/hummingbird/nodejs:22-builder AS system
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /sandbox
+
+# Core system dependencies (Fedora package names)
+#
+# Translation from upstream Ubuntu packages:
+#   ca-certificates     -> ca-certificates       (same)
+#   curl                -> curl                   (same)
+#   dnsutils            -> bind-utils             (dig, nslookup)
+#   iproute2            -> iproute                (ip netns, veth pairs)
+#   iptables            -> iptables-nft           (nftables backend on Fedora)
+#   iputils-ping        -> iputils                (ping)
+#   net-tools           -> net-tools              (same)
+#   netcat-openbsd      -> nmap-ncat              (ncat)
+#   openssh-sftp-server -> openssh-server         (sftp-server bundled)
+#   procps              -> procps-ng              (ps, top)
+#   traceroute          -> traceroute             (same)
+RUN dnf install -y --setopt=install_weak_deps=False \
+        ca-certificates \
+        curl \
+        bind-utils \
+        iproute \
+        iptables-nft \
+        iputils \
+        net-tools \
+        nmap-ncat \
+        openssh-server \
+        procps-ng \
+        traceroute \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# Create supervisor and sandbox users/groups
+RUN groupadd -r supervisor && useradd -r -g supervisor -s /usr/sbin/nologin supervisor && \
+    groupadd -r sandbox && useradd -r -g sandbox -d /sandbox -s /bin/bash sandbox
+
+# ---- Developer tools ----
+FROM system AS devtools
+
+# Node.js 22 is pre-installed from the Hummingbird base image.
+# Upgrade npm to v11 for tar vulnerability fixes and install build tools.
+# git, vim-minimal, and nano provide a basic dev environment.
+RUN dnf install -y --setopt=install_weak_deps=False \
+        gcc \
+        gcc-c++ \
+        make \
+        git \
+        vim-minimal \
+        nano \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf \
+    && npm install -g npm@11.11.0
+
+# Global npm packages — pinned for reproducibility.
+# tar + @hono/node-server: transitive vuln fixes.
+# opencode-ai + @openai/codex + @github/copilot: agent CLIs.
+RUN npm install -g \
+        tar@7.5.11 \
+        @hono/node-server@1.19.11 \
+        opencode-ai@1.2.18 \
+        @openai/codex@0.117.0 \
+        @github/copilot@1.0.16
+
+# GitHub CLI — available directly from Fedora repos
+RUN dnf install -y --setopt=install_weak_deps=False gh \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# Install Claude CLI via native installer.
+# Falls back to npm install if the native installer doesn't support Fedora.
+RUN (curl -fsSL https://claude.ai/install.sh | bash \
+    && cp /root/.local/bin/claude /usr/local/bin/claude \
+    && chmod 755 /usr/local/bin/claude) \
+    || (echo "Native installer failed, falling back to npm..." \
+    && npm install -g @anthropic-ai/claude-code)
+
+# uv (Python package/project manager) — pinned for reproducibility.
+# uv manages the Python toolchain; no system Python packages are needed.
+COPY --from=ghcr.io/astral-sh/uv:0.10.8 /uv /usr/local/bin/uv
+ENV UV_PYTHON_INSTALL_DIR="/sandbox/.uv/python"
+RUN uv python install 3.13 && \
+    ln -s $(uv python find 3.13) /usr/local/bin/python3 && \
+    ln -s $(uv python find 3.13) /usr/local/bin/python && \
+    uv cache clean
+
+# ---- Final base image ----
+FROM devtools AS final
+
+# Add venvs to PATH — /sandbox/.venv (writable, user-installed packages)
+# takes priority over system paths.
+ENV PATH="/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin" \
+    VIRTUAL_ENV="/sandbox/.venv"
+
+# Default sandbox network / filesystem policy
+COPY policy.yaml /etc/openshell/policy.yaml
+
+# Copy custom skills into the image.
+# To add a skill, create a subdirectory under sandboxes/base/skills/
+# with a SKILL.md file (and any supporting files).
+COPY skills/ /sandbox/.agents/skills/
+
+# Set up sandbox user home directory
+RUN mkdir -p /sandbox/.claude/skills && \
+    # Create a writable venv using uv-managed Python 3.13.
+    uv venv --python 3.13 --seed /sandbox/.venv && \
+    uv pip install --python /sandbox/.venv/bin/python cloudpickle && \
+    uv cache clean && \
+    chown -R sandbox:sandbox /sandbox/.venv && \
+    # Shell init files for sane PATH and prompt in interactive sessions.
+    printf 'export PATH="/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin"\nexport VIRTUAL_ENV="/sandbox/.venv"\nexport UV_PYTHON_INSTALL_DIR="/sandbox/.uv/python"\nexport PS1="\\u@\\h:\\w\\$ "\n' \
+        > /sandbox/.bashrc && \
+    printf '[ -f ~/.bashrc ] && . ~/.bashrc\n' > /sandbox/.profile && \
+    chown sandbox:sandbox /sandbox/.bashrc /sandbox/.profile && \
+    # Symlink skills into agent discovery directories
+    for skill in /sandbox/.agents/skills/*/; do \
+        [ -d "$skill" ] || continue; \
+        ln -sf "$skill" "/sandbox/.claude/skills/$(basename "$skill")"; \
+    done && \
+    chown -R sandbox:sandbox /sandbox/.claude /sandbox/.agents /sandbox
+
+USER sandbox
+
+ENTRYPOINT ["/bin/bash"]

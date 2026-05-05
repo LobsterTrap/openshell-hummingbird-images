@@ -1,0 +1,203 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build Core Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/**"
+  workflow_call: {}
+  workflow_dispatch:
+    inputs:
+      openshell-ref:
+        description: "NVIDIA/OpenShell git ref to build from (tag, branch, or SHA)"
+        required: false
+        type: string
+        default: ""
+
+# Pin the upstream OpenShell version to build from.
+# Update this when tracking a new upstream release.
+env:
+  # Default ref used when not overridden by workflow_dispatch input.
+  OPENSHELL_DEFAULT_REF: "v0.0.36"
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+
+permissions:
+  contents: read
+  packages: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build Rust binaries natively per architecture
+  # ---------------------------------------------------------------------------
+  build-rust:
+    name: Rust (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - name: Determine OpenShell ref
+        id: ref
+        run: |
+          REF="${{ inputs.openshell-ref || env.OPENSHELL_DEFAULT_REF }}"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Check out NVIDIA/OpenShell
+        uses: actions/checkout@v4
+        with:
+          repository: NVIDIA/OpenShell
+          ref: ${{ steps.ref.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust target and registry
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          shared-key: core-rust-${{ matrix.arch }}
+
+      - name: Build gateway binary
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p openshell-server
+
+      - name: Build supervisor binary
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p openshell-sandbox --bin openshell-sandbox
+
+      - name: Verify binaries
+        run: |
+          set -euo pipefail
+          target/${{ matrix.target }}/release/openshell-gateway --version
+          target/${{ matrix.target }}/release/openshell-sandbox --version
+
+      - name: Stage binaries
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/binaries/${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/openshell-gateway artifacts/binaries/${{ matrix.arch }}/
+          cp target/${{ matrix.target }}/release/openshell-sandbox artifacts/binaries/${{ matrix.arch }}/
+          chmod 755 artifacts/binaries/${{ matrix.arch }}/*
+
+      - name: Stage migrations
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/migrations
+          cp -r crates/openshell-server/migrations/* artifacts/migrations/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-build-${{ matrix.arch }}
+          path: artifacts/
+          retention-days: 3
+
+  # ---------------------------------------------------------------------------
+  # Build container images per architecture
+  # ---------------------------------------------------------------------------
+  build-images:
+    name: Image ${{ matrix.component }} (${{ matrix.arch }})
+    needs: build-rust
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [gateway, supervisor]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lowercase image prefix
+        id: repo
+        run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Rust build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-build-${{ matrix.arch }}
+          path: .build/
+
+      - name: Verify staged binary
+        run: |
+          ls -la .build/binaries/${{ matrix.arch }}/
+
+      - name: Build ${{ matrix.component }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: core/${{ matrix.component }}/Containerfile
+          platforms: linux/${{ matrix.arch }}
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/${{ matrix.component }}:${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.component }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}-${{ matrix.arch }}
+
+  # ---------------------------------------------------------------------------
+  # Merge per-arch images into multi-arch manifests
+  # ---------------------------------------------------------------------------
+  merge-manifests:
+    name: Merge ${{ matrix.component }} manifest
+    needs: build-images
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [gateway, supervisor]
+    steps:
+      - name: Lowercase image prefix
+        id: repo
+        run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Create multi-arch manifest
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/${{ matrix.component }}"
+          docker buildx imagetools create \
+            --prefer-index=false \
+            -t "${IMAGE}:${{ github.sha }}" \
+            "${IMAGE}:${{ github.sha }}-amd64" \
+            "${IMAGE}:${{ github.sha }}-arm64"
+
+      - name: Tag as latest
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/${{ matrix.component }}"
+          docker buildx imagetools create \
+            --prefer-index=false \
+            -t "${IMAGE}:latest" \
+            "${IMAGE}:${{ github.sha }}"

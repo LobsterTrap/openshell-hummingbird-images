@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+
+# SPDX-License-Identifier: Apache-2.0
+
+# OpenClaw Sandbox — Hummingbird Edition
+#
+# Builds on the Hummingbird-based community base sandbox and adds OpenClaw.
+#
+# Build:  docker build -t openshell-openclaw --build-arg BASE_IMAGE=openshell-base sandboxes/openclaw/
+# Run:    openshell sandbox create --from openclaw
+
+ARG BASE_IMAGE=ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/base:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Install OpenClaw CLI (pinned for reproducibility)
+RUN npm install -g openclaw@2026.3.11
+
+# Copy sandbox policy
+COPY policy.yaml /etc/openshell/policy.yaml
+
+# Copy the OpenClaw startup helper
+COPY openclaw-start.sh /usr/local/bin/openclaw-start
+RUN chmod +x /usr/local/bin/openclaw-start
+
+# Create OpenClaw workspace
+RUN mkdir -p /sandbox/.openclaw && \
+    chown -R sandbox:sandbox /sandbox/.openclaw
+
+USER sandbox
+
+ENTRYPOINT ["/bin/bash"]
