@@ -72,15 +72,16 @@ FROM system AS devtools
 
 # Node.js 22 is pre-installed from the Hummingbird base image.
 # Upgrade npm to v11 for tar vulnerability fixes and install build tools.
-# git, vim-minimal, and nano provide a basic dev environment.
+# Editors (vim, nano) may not be in Hummingbird repos -- install best-effort.
 RUN dnf install -y --setopt=install_weak_deps=False \
         gcc \
         gcc-c++ \
         make \
         git \
+    && dnf install -y --setopt=install_weak_deps=False --skip-unavailable \
         vim-minimal \
         nano \
-    && dnf clean all \
+    ; dnf clean all \
     && rm -rf /var/cache/dnf \
     && npm install -g npm@11.11.0
 
