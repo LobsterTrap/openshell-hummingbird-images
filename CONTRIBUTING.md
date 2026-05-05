@@ -39,7 +39,7 @@ images instead of `nvcr.io/nvidia/base/ubuntu:noble`. This means:
 
 1. Create a directory under `sandboxes/<name>/`
 2. Create a `Containerfile` that starts with:
-   ```dockerfile
+   ```
    ARG BASE_IMAGE=ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/base:latest
    FROM ${BASE_IMAGE}
    ```
@@ -91,10 +91,10 @@ Build individual images:
 
 ```bash
 # Base sandbox
-docker build -f sandboxes/base/Containerfile -t openshell-base sandboxes/base/
+podman build -f sandboxes/base/Containerfile -t openshell-base sandboxes/base/
 
 # Derivative (after building base)
-docker build -f sandboxes/gemini/Containerfile \
+podman build -f sandboxes/gemini/Containerfile \
   --build-arg BASE_IMAGE=openshell-base \
   -t openshell-gemini sandboxes/gemini/
 ```

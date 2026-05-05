@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Lowercase image prefix
         id: repo
@@ -66,10 +66,10 @@ jobs:
           REGISTRY="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}"
 
           echo "--- Testing gateway ---"
-          docker run --rm "${REGISTRY}/gateway:${{ github.sha }}" --version
+          podman run --rm "${REGISTRY}/gateway:${{ github.sha }}" --version
 
           echo "--- Testing supervisor ---"
-          docker run --rm "${REGISTRY}/supervisor:${{ github.sha }}" --version
+          podman run --rm "${REGISTRY}/supervisor:${{ github.sha }}" --version
 
       - name: Smoke test sandbox base
         run: |
@@ -77,7 +77,7 @@ jobs:
           REGISTRY="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}"
 
           echo "--- Testing sandboxes/base ---"
-          docker run --rm "${REGISTRY}/sandboxes/base:${{ github.sha }}" -c "
+          podman run --rm "${REGISTRY}/sandboxes/base:${{ github.sha }}" -c "
             node --version && \
             python3 --version && \
             gh --version && \
@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Lowercase image prefix
         id: repo
@@ -110,6 +110,7 @@ jobs:
           set -euo pipefail
           REGISTRY="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}"
           VERSION="${{ steps.version.outputs.semver }}"
+          SHA="${{ github.sha }}"
 
           IMAGES=(
             "gateway"
@@ -123,18 +124,17 @@ jobs:
           )
 
           for image in "${IMAGES[@]}"; do
-            echo "Tagging ${REGISTRY}/${image}:${{ github.sha }} -> ${VERSION}, latest"
-            docker buildx imagetools create \
-              --prefer-index=false \
-              -t "${REGISTRY}/${image}:${VERSION}" \
-              "${REGISTRY}/${image}:${{ github.sha }}" || \
-              echo "Warning: could not tag ${image} (may not have been built)"
+            echo "Tagging ${REGISTRY}/${image}:${SHA} -> ${VERSION}, latest"
 
-            docker buildx imagetools create \
-              --prefer-index=false \
-              -t "${REGISTRY}/${image}:latest" \
-              "${REGISTRY}/${image}:${{ github.sha }}" || \
-              echo "Warning: could not tag ${image} (may not have been built)"
+            # Create version tag manifest from per-arch images
+            for TAG in "${VERSION}" "latest"; do
+              podman manifest create "${REGISTRY}/${image}:${TAG}" \
+                "${REGISTRY}/${image}:${SHA}-amd64" \
+                "${REGISTRY}/${image}:${SHA}-arm64" 2>/dev/null \
+              && podman manifest push "${REGISTRY}/${image}:${TAG}" \
+                "docker://${REGISTRY}/${image}:${TAG}" \
+              || echo "Warning: could not tag ${image}:${TAG}"
+            done
           done
 
   # ---------------------------------------------------------------------------
@@ -170,16 +170,16 @@ jobs:
 
             ```
             # Core infrastructure (distroless)
-            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/gateway:${{ steps.version.outputs.semver }}
-            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/supervisor:${{ steps.version.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/gateway:${{ steps.version.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/supervisor:${{ steps.version.outputs.semver }}
 
             # Sandbox images (builder)
-            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/base:${{ steps.version.outputs.semver }}
-            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw:${{ steps.version.outputs.semver }}
-            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw-nvidia:${{ steps.version.outputs.semver }}
-            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/ollama:${{ steps.version.outputs.semver }}
-            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/gemini:${{ steps.version.outputs.semver }}
-            docker pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/droid:${{ steps.version.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/base:${{ steps.version.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw:${{ steps.version.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw-nvidia:${{ steps.version.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/ollama:${{ steps.version.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/gemini:${{ steps.version.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/droid:${{ steps.version.outputs.semver }}
             ```
 
             ### Base Images

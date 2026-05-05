@@ -91,7 +91,7 @@ jobs:
           echo "Will build: ${SANDBOXES}"
 
   # ---------------------------------------------------------------------------
-  # Build base sandbox image
+  # Build base sandbox image (multi-arch via podman manifest)
   # ---------------------------------------------------------------------------
   build-base:
     name: Build base
@@ -105,39 +105,54 @@ jobs:
         id: repo
         run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up QEMU for multi-arch
+        run: sudo apt-get install -y qemu-user-static
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Generate image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/base
-          tags: |
-            type=sha,format=long,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Compute tags
+        id: tags
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/base"
+          echo "sha_tag=${IMAGE}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: sandboxes/base
-          file: sandboxes/base/Containerfile
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.ref == 'refs/heads/main' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=base
-          cache-to: type=gha,mode=max,scope=base
+      - name: Build multi-arch manifest
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.tags.outputs.image }}"
+          SHA="${{ github.sha }}"
+
+          # Build per-arch
+          for ARCH in amd64 arm64; do
+            podman build \
+              --platform "linux/${ARCH}" \
+              -f sandboxes/base/Containerfile \
+              -t "${IMAGE}:${SHA}-${ARCH}" \
+              sandboxes/base/
+          done
+
+      - name: Push images
+        if: github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.tags.outputs.image }}"
+          SHA="${{ github.sha }}"
+
+          # Push per-arch images
+          for ARCH in amd64 arm64; do
+            podman push "${IMAGE}:${SHA}-${ARCH}"
+          done
+
+          # Create and push multi-arch manifests
+          for TAG in "${SHA}" "latest"; do
+            podman manifest create "${IMAGE}:${TAG}"
+            podman manifest add "${IMAGE}:${TAG}" "${IMAGE}:${SHA}-amd64"
+            podman manifest add "${IMAGE}:${TAG}" "${IMAGE}:${SHA}-arm64"
+            podman manifest push "${IMAGE}:${TAG}" "docker://${IMAGE}:${TAG}"
+          done
 
   # ---------------------------------------------------------------------------
   # Build derivative sandbox images (matrix)
@@ -162,34 +177,24 @@ jobs:
         id: repo
         run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Set up QEMU for multi-arch
+        run: sudo apt-get install -y qemu-user-static
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Start local registry (PR only)
         if: github.ref != 'refs/heads/main'
-        run: docker run -d -p 5000:5000 --name registry registry:2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: ${{ github.ref != 'refs/heads/main' && 'network=host' || '' }}
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: podman run -d -p 5000:5000 --name registry registry:2
 
       - name: Build base image locally (PR only)
         if: github.ref != 'refs/heads/main'
-        uses: docker/build-push-action@v6
-        with:
-          context: sandboxes/base
-          file: sandboxes/base/Containerfile
-          push: true
-          tags: localhost:5000/sandboxes/base:latest
-          cache-from: type=gha,scope=base
+        run: |
+          podman build \
+            -f sandboxes/base/Containerfile \
+            -t localhost:5000/sandboxes/base:latest \
+            sandboxes/base/
+          podman push localhost:5000/sandboxes/base:latest --tls-verify=false
 
       - name: Determine parent sandbox
         id: parent
@@ -205,15 +210,13 @@ jobs:
 
       - name: Build parent sandbox locally (PR only)
         if: github.ref != 'refs/heads/main' && steps.parent.outputs.sandbox != 'base'
-        uses: docker/build-push-action@v6
-        with:
-          context: sandboxes/${{ steps.parent.outputs.sandbox }}
-          file: sandboxes/${{ steps.parent.outputs.sandbox }}/Containerfile
-          push: true
-          tags: localhost:5000/sandboxes/${{ steps.parent.outputs.sandbox }}:latest
-          build-args: |
-            BASE_IMAGE=localhost:5000/sandboxes/base:latest
-          cache-from: type=gha,scope=${{ steps.parent.outputs.sandbox }}
+        run: |
+          podman build \
+            --build-arg BASE_IMAGE=localhost:5000/sandboxes/base:latest \
+            -f sandboxes/${{ steps.parent.outputs.sandbox }}/Containerfile \
+            -t localhost:5000/sandboxes/${{ steps.parent.outputs.sandbox }}:latest \
+            sandboxes/${{ steps.parent.outputs.sandbox }}/
+          podman push localhost:5000/sandboxes/${{ steps.parent.outputs.sandbox }}:latest --tls-verify=false
 
       - name: Set BASE_IMAGE
         id: base
@@ -225,25 +228,48 @@ jobs:
             echo "image=localhost:5000/sandboxes/${PARENT}:latest" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Generate image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/${{ matrix.sandbox }}
-          tags: |
-            type=sha,format=long,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/${{ matrix.sandbox }}"
+          SHA="${{ github.sha }}"
+          BASE="${{ steps.base.outputs.image }}"
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: sandboxes/${{ matrix.sandbox }}
-          file: sandboxes/${{ matrix.sandbox }}/Containerfile
-          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: ${{ github.ref == 'refs/heads/main' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            BASE_IMAGE=${{ steps.base.outputs.image }}
-          cache-from: type=gha,scope=${{ matrix.sandbox }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.sandbox }}
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            # Multi-arch build for main
+            for ARCH in amd64 arm64; do
+              podman build \
+                --platform "linux/${ARCH}" \
+                --build-arg "BASE_IMAGE=${BASE}" \
+                -f sandboxes/${{ matrix.sandbox }}/Containerfile \
+                -t "${IMAGE}:${SHA}-${ARCH}" \
+                sandboxes/${{ matrix.sandbox }}/
+            done
+          else
+            # amd64-only for PRs
+            podman build \
+              --build-arg "BASE_IMAGE=${BASE}" \
+              -f sandboxes/${{ matrix.sandbox }}/Containerfile \
+              -t "${IMAGE}:${SHA}" \
+              sandboxes/${{ matrix.sandbox }}/
+          fi
+
+      - name: Push images
+        if: github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/${{ matrix.sandbox }}"
+          SHA="${{ github.sha }}"
+
+          # Push per-arch images
+          for ARCH in amd64 arm64; do
+            podman push "${IMAGE}:${SHA}-${ARCH}"
+          done
+
+          # Create and push multi-arch manifests
+          for TAG in "${SHA}" "latest"; do
+            podman manifest create "${IMAGE}:${TAG}"
+            podman manifest add "${IMAGE}:${TAG}" "${IMAGE}:${SHA}-amd64"
+            podman manifest add "${IMAGE}:${TAG}" "${IMAGE}:${SHA}-arm64"
+            podman manifest push "${IMAGE}:${TAG}" "docker://${IMAGE}:${TAG}"
+          done

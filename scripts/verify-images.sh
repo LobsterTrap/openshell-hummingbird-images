@@ -27,7 +27,7 @@ run_test() {
     local image="$1"
     local description="$2"
     shift 2
-    if docker run --rm "$image" "$@" > /dev/null 2>&1; then
+    if podman run --rm "$image" "$@" > /dev/null 2>&1; then
         pass "$description"
     else
         fail "$description"
@@ -40,7 +40,7 @@ run_test() {
 echo ""
 echo "=== Core: gateway ==="
 GATEWAY="${REGISTRY}/gateway:${TAG}"
-if docker pull "$GATEWAY" > /dev/null 2>&1; then
+if podman pull "$GATEWAY" > /dev/null 2>&1; then
     run_test "$GATEWAY" "gateway --version" --version
 else
     fail "Could not pull $GATEWAY"
@@ -49,7 +49,7 @@ fi
 echo ""
 echo "=== Core: supervisor ==="
 SUPERVISOR="${REGISTRY}/supervisor:${TAG}"
-if docker pull "$SUPERVISOR" > /dev/null 2>&1; then
+if podman pull "$SUPERVISOR" > /dev/null 2>&1; then
     run_test "$SUPERVISOR" "supervisor --version" --version
 else
     fail "Could not pull $SUPERVISOR"
@@ -61,7 +61,7 @@ fi
 echo ""
 echo "=== Sandbox: base ==="
 BASE="${REGISTRY}/sandboxes/base:${TAG}"
-if docker pull "$BASE" > /dev/null 2>&1; then
+if podman pull "$BASE" > /dev/null 2>&1; then
     run_test "$BASE" "node --version" -c "node --version"
     run_test "$BASE" "python3 --version" -c "python3 --version"
     run_test "$BASE" "npm --version" -c "npm --version"
@@ -80,7 +80,7 @@ fi
 echo ""
 echo "=== Sandbox: openclaw ==="
 OPENCLAW="${REGISTRY}/sandboxes/openclaw:${TAG}"
-if docker pull "$OPENCLAW" > /dev/null 2>&1; then
+if podman pull "$OPENCLAW" > /dev/null 2>&1; then
     run_test "$OPENCLAW" "openclaw --version" -c "openclaw --version"
     run_test "$OPENCLAW" "openclaw-start exists" -c "test -x /usr/local/bin/openclaw-start"
 else
@@ -90,7 +90,7 @@ fi
 echo ""
 echo "=== Sandbox: openclaw-nvidia ==="
 OPENCLAW_NV="${REGISTRY}/sandboxes/openclaw-nvidia:${TAG}"
-if docker pull "$OPENCLAW_NV" > /dev/null 2>&1; then
+if podman pull "$OPENCLAW_NV" > /dev/null 2>&1; then
     run_test "$OPENCLAW_NV" "openclaw --version" -c "openclaw --version"
     run_test "$OPENCLAW_NV" "jq --version" -c "jq --version"
     run_test "$OPENCLAW_NV" "openclaw-nvidia-start exists" -c "test -x /usr/local/bin/openclaw-nvidia-start"
@@ -102,7 +102,7 @@ fi
 echo ""
 echo "=== Sandbox: ollama ==="
 OLLAMA="${REGISTRY}/sandboxes/ollama:${TAG}"
-if docker pull "$OLLAMA" > /dev/null 2>&1; then
+if podman pull "$OLLAMA" > /dev/null 2>&1; then
     run_test "$OLLAMA" "ollama binary exists" -c "test -x /sandbox/bin/ollama"
     run_test "$OLLAMA" "entrypoint exists" -c "test -x /usr/local/bin/entrypoint"
     run_test "$OLLAMA" "update-ollama exists" -c "test -x /sandbox/bin/update-ollama"
@@ -113,7 +113,7 @@ fi
 echo ""
 echo "=== Sandbox: gemini ==="
 GEMINI="${REGISTRY}/sandboxes/gemini:${TAG}"
-if docker pull "$GEMINI" > /dev/null 2>&1; then
+if podman pull "$GEMINI" > /dev/null 2>&1; then
     run_test "$GEMINI" "gemini --version" -c "gemini --version"
 else
     fail "Could not pull $GEMINI"
@@ -122,7 +122,7 @@ fi
 echo ""
 echo "=== Sandbox: droid ==="
 DROID="${REGISTRY}/sandboxes/droid:${TAG}"
-if docker pull "$DROID" > /dev/null 2>&1; then
+if podman pull "$DROID" > /dev/null 2>&1; then
     run_test "$DROID" "droid --version" -c "droid --version"
 else
     fail "Could not pull $DROID"

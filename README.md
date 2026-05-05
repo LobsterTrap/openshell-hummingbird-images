@@ -66,12 +66,12 @@ Pull images directly:
 
 ```bash
 # Core infrastructure
-docker pull ghcr.io/lobstertrap/openshell-hummingbird-images/gateway:latest
-docker pull ghcr.io/lobstertrap/openshell-hummingbird-images/supervisor:latest
+podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/gateway:latest
+podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/supervisor:latest
 
 # Sandbox images
-docker pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/base:latest
-docker pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw:latest
+podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/base:latest
+podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw:latest
 ```
 
 Use with OpenShell CLI (point to this registry):
@@ -105,6 +105,7 @@ layer only:
 | Package manager | apt (Ubuntu/Debian) | dnf (Fedora) |
 | CVE posture | Standard Ubuntu | Near-zero CVE (Hummingbird hardened) |
 | Build provenance | Standard | SLSA provenance + SBOM |
+| Build tooling | Docker | Podman |
 
 Application-level content (binaries, tools, configurations, policies) is
 functionally equivalent.

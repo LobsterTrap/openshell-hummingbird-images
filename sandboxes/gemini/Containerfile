@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 
 # SPDX-License-Identifier: Apache-2.0
 
@@ -6,7 +5,7 @@
 #
 # Builds on the Hummingbird-based community base sandbox and adds Google Gemini CLI.
 #
-# Build:  docker build -t openshell-gemini --build-arg BASE_IMAGE=openshell-base sandboxes/gemini/
+# Build:  podman build -t openshell-gemini --build-arg BASE_IMAGE=openshell-base sandboxes/gemini/
 # Run:    openshell sandbox create --from gemini
 
 ARG BASE_IMAGE=ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/base:latest

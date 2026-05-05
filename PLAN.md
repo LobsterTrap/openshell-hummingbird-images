@@ -297,7 +297,7 @@ All images are multi-arch manifests: `linux/amd64` + `linux/arm64`.
    - Build `supervisor` Containerfile (FROM `quay.io/hummingbird/core-runtime`)
    - Push per-arch images to GHCR
 3. **merge-manifests** (depends on build-images)
-   - `docker buildx imagetools create` to merge amd64 + arm64 into multi-arch manifest
+   - `podman manifest create/add/push` to merge amd64 + arm64 into multi-arch manifest
 
 ### build-sandboxes.yml — Sandbox Images
 
@@ -323,7 +323,7 @@ All images are multi-arch manifests: `linux/amd64` + `linux/arm64`.
 **Jobs:**
 1. Trigger `build-core.yml` and `build-sandboxes.yml` (build everything)
 2. Run `scripts/verify-images.sh` smoke tests
-3. Re-tag all images with semver + `latest` via `docker buildx imagetools create`
+3. Re-tag all images with semver + `latest` via `podman manifest create/push`
 4. Create GitHub Release with image manifest
 
 ---
@@ -354,7 +354,7 @@ All images are multi-arch manifests: `linux/amd64` + `linux/arm64`.
 - [x] Write `sandboxes/gemini/Containerfile` + policy.yaml
 - [x] Write `sandboxes/droid/Containerfile` + policy.yaml
 - [x] Run `scripts/sync-upstream.sh` to populate openclaw-nvidia JS/proto/UI files
-- [ ] Test each derivative image on real Docker builds
+- [ ] Test each derivative image on real podman builds
 
 ### Phase 5: CI/CD + Release (Session 2)
 - [x] Write `build-sandboxes.yml` with change detection
