@@ -32,9 +32,14 @@ WORKDIR /sandbox
 
 # Core system dependencies (Fedora package names)
 #
+# Hummingbird builder images ship a curated minimal package set.
+# ca-certificates and curl are already present in the base image.
+# Some networking tools (iptables, iputils, net-tools, nmap-ncat, traceroute)
+# may not be available in Hummingbird repos — install with --skip-unavailable.
+#
 # Translation from upstream Ubuntu packages:
-#   ca-certificates     -> ca-certificates       (same)
-#   curl                -> curl                   (same)
+#   ca-certificates     -> (already in base)
+#   curl                -> (already in base)
 #   dnsutils            -> bind-utils             (dig, nslookup)
 #   iproute2            -> iproute                (ip netns, veth pairs)
 #   iptables            -> iptables-nft           (nftables backend on Fedora)
@@ -45,18 +50,17 @@ WORKDIR /sandbox
 #   procps              -> procps-ng              (ps, top)
 #   traceroute          -> traceroute             (same)
 RUN dnf install -y --setopt=install_weak_deps=False \
-        ca-certificates \
-        curl \
         bind-utils \
         iproute \
+        openssh-server \
+        procps-ng \
+    && dnf install -y --setopt=install_weak_deps=False --skip-unavailable \
         iptables-nft \
         iputils \
         net-tools \
         nmap-ncat \
-        openssh-server \
-        procps-ng \
         traceroute \
-    && dnf clean all \
+    ; dnf clean all \
     && rm -rf /var/cache/dnf
 
 # Create supervisor and sandbox users/groups
