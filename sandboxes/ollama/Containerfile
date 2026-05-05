@@ -14,8 +14,8 @@ FROM ${BASE_IMAGE}
 
 USER root
 
-# Install zstd (required by Ollama install script) — Fedora package name is the same
-RUN dnf install -y --setopt=install_weak_deps=False zstd \
+# Install zstd + gawk (required by Ollama install script)
+RUN dnf install -y --setopt=install_weak_deps=False zstd gawk \
     && dnf clean all && rm -rf /var/cache/dnf
 
 # Install Ollama into /sandbox/bin so it lives on a writable path and can be
