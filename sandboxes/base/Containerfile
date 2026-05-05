@@ -21,6 +21,10 @@
 # ---- System base ----
 FROM quay.io/hummingbird/nodejs:22-builder AS system
 
+# Hummingbird builder images default to non-root (UID 65532).
+# Switch to root for package installation; we switch to sandbox user at the end.
+USER root
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

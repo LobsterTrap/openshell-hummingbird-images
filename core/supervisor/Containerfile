@@ -18,6 +18,8 @@
 # ---------------------------------------------------------------------------
 FROM quay.io/hummingbird/core-runtime:latest-builder AS usersetup
 
+# Hummingbird builder images default to non-root; need root for useradd
+USER root
 RUN useradd --create-home --user-group --uid 1001 openshell
 
 # ---------------------------------------------------------------------------
