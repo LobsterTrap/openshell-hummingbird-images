@@ -72,12 +72,13 @@ FROM system AS devtools
 
 # Node.js 22 is pre-installed from the Hummingbird base image.
 # Upgrade npm to v11 for tar vulnerability fixes and install build tools.
-# Editors (vim, nano) may not be in Hummingbird repos -- install best-effort.
+# tar is needed for gh CLI install below. Editors may not be in Hummingbird repos.
 RUN dnf install -y --setopt=install_weak_deps=False \
         gcc \
         gcc-c++ \
         make \
         git \
+        tar \
     && dnf install -y --setopt=install_weak_deps=False --skip-unavailable \
         vim-minimal \
         nano \
