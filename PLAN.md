@@ -34,6 +34,8 @@ implementation work.
 | Registry namespace | `ghcr.io/lobstertrap/openshell-hummingbird-images/*` | Flat namespace under this repo |
 | Binary sourcing (core) | Build from source | Clone NVIDIA/OpenShell, compile Rust binaries in CI |
 | Policy files | Adapt for Fedora | Filesystem paths differ between Ubuntu and Fedora |
+| Build tooling | **Podman** (native commands) | No Docker dependency; uses podman build/manifest/push |
+| Multi-arch strategy | `podman manifest` + `qemu-user-static` | Per-arch builds merged into multi-arch manifests |
 
 ---
 
@@ -339,13 +341,13 @@ All images are multi-arch manifests: `linux/amd64` + `linux/arm64`.
 - [x] Write `core/gateway/Containerfile`
 - [x] Write `core/supervisor/Containerfile`
 - [x] Write `build-core.yml` workflow (including Rust build-from-source)
-- [ ] Test gateway and supervisor image builds locally
+- [x] Test gateway and supervisor image builds (CI verified — all green)
 
 ### Phase 3: Sandbox Base Image (Session 2)
 - [x] Write `sandboxes/base/Containerfile` (full Ubuntu→Fedora translation)
 - [x] Adapt `sandboxes/base/policy.yaml` for Fedora filesystem paths
 - [x] Copy/adapt agent skills
-- [ ] Test base sandbox image locally (verify all tools: node, python, claude, gh, etc.)
+- [x] Test base sandbox image (CI verified — all green)
 
 ### Phase 4: Sandbox Derivative Images (Session 2)
 - [x] Write `sandboxes/openclaw/Containerfile` + policy.yaml + openclaw-start
@@ -354,7 +356,7 @@ All images are multi-arch manifests: `linux/amd64` + `linux/arm64`.
 - [x] Write `sandboxes/gemini/Containerfile` + policy.yaml
 - [x] Write `sandboxes/droid/Containerfile` + policy.yaml
 - [x] Run `scripts/sync-upstream.sh` to populate openclaw-nvidia JS/proto/UI files
-- [ ] Test each derivative image on real podman builds
+- [x] Test each derivative image (CI verified — all green)
 
 ### Phase 5: CI/CD + Release (Session 2)
 - [x] Write `build-sandboxes.yml` with change detection
@@ -373,6 +375,26 @@ All images are multi-arch manifests: `linux/amd64` + `linux/arm64`.
 - [x] Fixed: base Containerfile Claude CLI fallback for Fedora
 - [x] Fixed: build-sandboxes.yml detect-changes logic for workflow_call/tag events
 
+### Phase 7: Docker → Podman Migration (Session 4)
+- [x] Rewrite `build-core.yml`: replace Docker actions with native podman commands
+- [x] Rewrite `build-sandboxes.yml`: replace Docker actions with native podman commands
+- [x] Rewrite `release.yml`: replace Docker CLI with podman CLI
+- [x] Remove `# syntax=docker/dockerfile:1` from all 8 Containerfiles
+- [x] Update all build comments from `docker build` to `podman build`
+- [x] Update `scripts/verify-images.sh` to use podman
+- [x] Update README.md, CONTRIBUTING.md, PLAN.md to reference podman
+- [x] Verify zero Docker references in project-owned files
+- [x] CI verified: all 8 images build and push with podman
+
+### Phase 8: Hummingbird Compatibility Fixes (Sessions 3-4)
+- [x] Fixed: `USER root` required for Hummingbird builder stages (default UID 65532)
+- [x] Fixed: `ca-certificates` and `curl` already in Hummingbird base (skip)
+- [x] Fixed: networking tools not in Hummingbird repos (use `--skip-unavailable`)
+- [x] Fixed: `vim-minimal` and `nano` not in Hummingbird repos (use `--skip-unavailable`)
+- [x] Fixed: `gh` CLI not in Hummingbird repos (install from GitHub Releases binary)
+- [x] Fixed: `tar` not in Hummingbird builder base (add to dnf install)
+- [x] Fixed: `gawk` needed for Ollama install script (add to dnf install)
+
 ---
 
 ## Session Tracking
@@ -382,6 +404,7 @@ All images are multi-arch manifests: `linux/amd64` + `linux/arm64`.
 | 1 | 2026-05-05 | Research, planning, scaffolding | Complete |
 | 2 | 2026-05-05 | Core + sandbox + CI/CD (all phases) | Complete |
 | 3 | 2026-05-05 | Sync, review, bugfixes, docs | Complete |
+| 4 | 2026-05-05 | Docker→Podman migration, CI stabilization | Complete |
 
 ---
 
