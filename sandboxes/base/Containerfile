@@ -95,10 +95,12 @@ RUN npm install -g \
         @openai/codex@0.117.0 \
         @github/copilot@1.0.16
 
-# GitHub CLI — available directly from Fedora repos
-RUN dnf install -y --setopt=install_weak_deps=False gh \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf
+# GitHub CLI — not in Hummingbird repos, install from GitHub Releases.
+ARG TARGETARCH
+RUN GH_VERSION=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/') \
+    && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
+       | tar xz --strip-components=1 -C /usr/local \
+    && gh --version
 
 # Install Claude CLI via native installer.
 # Falls back to npm install if the native installer doesn't support Fedora.
