@@ -34,6 +34,7 @@ images instead of `nvcr.io/nvidia/base/ubuntu:noble`. This means:
 2. **Package names**: Some differ (see `PLAN.md` for the translation table)
 3. **Library paths**: Fedora uses `/usr/lib64` for 64-bit libraries
 4. **Filesystem policy**: `policy.yaml` files include `/lib64` in `read_only`
+5. **Pinned bases**: Hummingbird bases are pinned by digest for reproducibility
 
 ## Adding a New Sandbox Image
 
@@ -46,6 +47,13 @@ images instead of `nvcr.io/nvidia/base/ubuntu:noble`. This means:
 3. Create a `policy.yaml` with Fedora-appropriate filesystem paths (include
    `/lib64` in `read_only`)
 4. The CI will auto-detect the new sandbox via the `detect-changes` job
+
+Sandbox builds are dependency-aware:
+
+- `sandboxes/base` is published under the commit SHA before derivative builds
+- `openclaw`, `ollama`, `gemini`, and `droid` build from the same SHA-tagged
+  base image
+- `openclaw-nvidia` builds from the same SHA-tagged `openclaw` image
 
 ## Modifying Existing Images
 
@@ -60,7 +68,10 @@ Files like `policy-proxy.js`, `inference-options.js`, proto definitions, and
 the NeMoClaw UI extension are synced from upstream without modification:
 
 ```bash
-./scripts/sync-upstream.sh [--ref REF]
+./scripts/sync-upstream.sh --ref <ref>
+
+# Positional shorthand also works
+./scripts/sync-upstream.sh <ref>
 ```
 
 Do not edit these files directly -- changes will be overwritten by the next
@@ -107,9 +118,12 @@ Run smoke tests:
 
 ## CI/CD
 
-- **Push to `main`** with changes in `core/` or `sandboxes/` triggers builds
-- **Tag `v*.*.*`** triggers a full release (all images rebuilt, tagged, released)
-- **Manual dispatch** rebuilds everything
+- **Push to `main`** with changes in `core/` or `sandboxes/` publishes
+  immutable SHA-tagged images
+- **Tag `v*.*.*`** triggers a full release: rebuild from the tag, verify all
+  SHA-tagged images, then promote them to semver and `latest`
+- **Manual dispatch of `release.yml`** rebuilds the requested tag and performs
+  the same verification and promotion flow
 
 ## License
 

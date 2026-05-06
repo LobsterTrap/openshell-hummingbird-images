@@ -36,6 +36,7 @@ implementation work.
 | Policy files | Adapt for Fedora | Filesystem paths differ between Ubuntu and Fedora |
 | Build tooling | **Podman** (native commands) | No Docker dependency; uses podman build/manifest/push |
 | Multi-arch strategy | `podman manifest` + `qemu-user-static` | Per-arch builds merged into multi-arch manifests |
+| Hummingbird pinning | Image digests | Avoids drift from floating `:latest` tags |
 
 ---
 
@@ -172,7 +173,7 @@ must be translated to Fedora equivalents for `dnf`.
 | Node.js 22 | NodeSource apt repo | Pre-installed in `nodejs:22-builder` base |
 | npm 11 | Upgraded via `npm install -g npm@11.11.0` | Same (upgrade from base) |
 | Python 3.13 | Installed via `uv` (COPY binary from uv image) | Same approach |
-| Claude CLI | `claude.ai/install.sh` | Same; test on Fedora, fallback to npm if needed |
+| Claude CLI | `claude.ai/install.sh` | Same; test on Fedora, fallback to npm package `@anthropic-ai/claude-code` if needed |
 | GitHub CLI (gh) | GitHub apt repo | `dnf install gh` (available in Fedora repos) or binary from GitHub Releases |
 | OpenCode | `npm install -g opencode-ai` | Same |
 | Codex | `npm install -g @openai/codex` | Same |
@@ -194,12 +195,12 @@ must be translated to Fedora equivalents for `dnf`.
 | Risk | Severity | Mitigation |
 |------|----------|------------|
 | Policy.yaml filesystem paths | Medium | Fedora uses `/usr/lib64` for 64-bit libs vs Ubuntu's `/usr/lib`. Verify and adapt each policy file. Binary paths (`/usr/bin/node`, `/usr/bin/python3`) should be consistent. |
-| Claude CLI installer | Low | `claude.ai/install.sh` may not detect Fedora. Fallback: install via npm (`@anthropic-ai/claude-cli`). |
+| Claude CLI installer | Low | `claude.ai/install.sh` may not detect Fedora. Fallback: install via npm (`@anthropic-ai/claude-code`). |
 | Hummingbird Node.js version drift | Low | Upstream pins Node.js `22.22.1`. Hummingbird may ship a different 22.x patch version. Functionally equivalent. |
 | Non-root user differences | Low | Hummingbird defaults to UID 65532. Must create `sandbox` (UID 1000) and `supervisor` users explicitly, matching upstream. |
-| Hummingbird early access stability | Medium | Images at `quay.io/hummingbird/` may change. Pin specific tags, not `:latest`. |
+| Hummingbird early access stability | Medium | Images at `quay.io/hummingbird/` may change. Pin image digests in every Containerfile. |
 | Rust build complexity | Medium | NVIDIA/OpenShell uses `mise` for task orchestration. Need to replicate or simplify the build pipeline for gateway and supervisor binaries. |
-| openssh-sftp-server path | Low | On Fedora, sftp-server binary is at `/usr/libexec/openssh/sftp-server` vs Ubuntu's `/usr/lib/openssh/sftp-server`. Policy files referencing this path must be updated. |
+| openssh-sftp-server path | Low | On Fedora, sftp-server binary is at `/usr/libexec/openssh/sftp-server` vs Ubuntu's `/usr/lib/openssh/sftp-server`. Current policies do not reference it; revisit only if a future policy adds explicit SFTP binary paths. |
 
 ---
 
@@ -228,13 +229,13 @@ openshell-hummingbird-images/
 │   ├── openclaw/
 │   │   ├── Containerfile
 │   │   ├── policy.yaml
-│   │   └── openclaw-start
+│   │   └── openclaw-start.sh
 │   ├── openclaw-nvidia/
 │   │   ├── Containerfile
 │   │   ├── policy.yaml
 │   │   ├── policy-proxy.js
 │   │   ├── inference-options.js
-│   │   ├── openclaw-nvidia-start
+│   │   ├── openclaw-nvidia-start.sh
 │   │   └── devx/                        # NeMoClaw DevX extension sources
 │   ├── ollama/
 │   │   ├── Containerfile
@@ -285,7 +286,7 @@ All images are multi-arch manifests: `linux/amd64` + `linux/arm64`.
 
 ### build-core.yml — Core Infrastructure
 
-**Triggers:** Push to `main` (paths: `core/**`), release tags, manual dispatch.
+**Triggers:** Push to `main` (paths: `core/**`), reusable calls from `release.yml`, manual dispatch.
 
 **Jobs:**
 1. **build-rust** (per-arch: amd64, arm64)
@@ -297,36 +298,37 @@ All images are multi-arch manifests: `linux/amd64` + `linux/arm64`.
    - Download pre-built binaries
    - Build `gateway` Containerfile (FROM `quay.io/hummingbird/core-runtime`)
    - Build `supervisor` Containerfile (FROM `quay.io/hummingbird/core-runtime`)
-   - Push per-arch images to GHCR
+   - Push per-arch images to GHCR under `${sha}-<arch>` tags
 3. **merge-manifests** (depends on build-images)
-   - `podman manifest create/add/push` to merge amd64 + arm64 into multi-arch manifest
+   - `podman manifest create/add/push` to merge amd64 + arm64 into a `${sha}` multi-arch manifest
 
 ### build-sandboxes.yml — Sandbox Images
 
-**Triggers:** Push to `main` (paths: `sandboxes/**`), release tags, manual dispatch.
+**Triggers:** Push to `main` (paths: `sandboxes/**`), pull requests to `main`, reusable calls from `release.yml`, manual dispatch.
 
 **Jobs:**
 1. **detect-changes**
    - Diff changed files against `sandboxes/`
-   - If `sandboxes/base/` changed → rebuild ALL sandboxes
-   - Otherwise → only rebuild changed sandboxes
-2. **build-base** (multi-arch, runs if base changed or manual/release)
-   - Build `sandboxes/base` Containerfile
-   - Push to GHCR
-3. **build-derivatives** (matrix job, depends on build-base)
-   - For each changed sandbox: build its Containerfile using our base image
-   - Push to GHCR
-4. **merge-manifests** for each image
+   - If `sandboxes/base/` changed, or the workflow is called for a release/manual rebuild → rebuild ALL sandboxes
+   - Expand dependency closures so `openclaw` changes also rebuild `openclaw-nvidia`, and `openclaw-nvidia` rebuilds a same-SHA `openclaw` parent
+2. **build-base**
+   - Build `sandboxes/base` first
+   - On publish runs, push `${sha}-<arch>` tags and a `${sha}` multi-arch manifest
+3. **build-tier1**
+   - Build `openclaw`, `ollama`, `gemini`, and `droid` against the same-SHA base image
+4. **build-tier2**
+   - Build `openclaw-nvidia` against the same-SHA `openclaw` image
 
 ### release.yml — Release Pipeline
 
 **Triggers:** Push of `v*.*.*` tag.
 
 **Jobs:**
-1. Trigger `build-core.yml` and `build-sandboxes.yml` (build everything)
-2. Run `scripts/verify-images.sh` smoke tests
-3. Re-tag all images with semver + `latest` via `podman manifest create/push`
-4. Create GitHub Release with image manifest
+1. Resolve the release tag to an exact source ref and commit SHA
+2. Trigger `build-core.yml` and `build-sandboxes.yml` with `publish=true`, the resolved source ref, and the resolved image SHA
+3. Run `scripts/verify-images.sh` smoke tests against the published SHA-tagged images
+4. Re-tag all images with semver + `latest` via `podman manifest create/push`
+5. Create GitHub Release with image manifest
 
 ---
 

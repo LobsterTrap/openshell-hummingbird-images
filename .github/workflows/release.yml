@@ -28,11 +28,56 @@ defaults:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # Resolve the release ref and commit SHA
+  # ---------------------------------------------------------------------------
+  resolve-release:
+    name: Resolve Release Ref
+    runs-on: ubuntu-latest
+    outputs:
+      source-ref: ${{ steps.resolve.outputs.source_ref }}
+      source-sha: ${{ steps.resolve.outputs.source_sha }}
+      semver: ${{ steps.resolve.outputs.semver }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag to ref and SHA
+        id: resolve
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ env.RELEASE_TAG }}"
+            git fetch --force --tags origin
+            SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+            REF="refs/tags/${TAG}"
+          else
+            TAG="${{ env.RELEASE_TAG }}"
+            SHA="${{ github.sha }}"
+            REF="${{ github.ref }}"
+          fi
+
+          if [ -z "$SHA" ]; then
+            echo "Could not resolve release tag ${TAG}" >&2
+            exit 1
+          fi
+
+          echo "source_ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "semver=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
   # Build all core images
   # ---------------------------------------------------------------------------
   build-core:
     name: Build Core Images
+    needs: resolve-release
     uses: ./.github/workflows/build-core.yml
+    with:
+      publish: true
+      source-ref: ${{ needs.resolve-release.outputs.source-ref }}
+      image-sha: ${{ needs.resolve-release.outputs.source-sha }}
     secrets: inherit
 
   # ---------------------------------------------------------------------------
@@ -40,7 +85,12 @@ jobs:
   # ---------------------------------------------------------------------------
   build-sandboxes:
     name: Build Sandbox Images
+    needs: resolve-release
     uses: ./.github/workflows/build-sandboxes.yml
+    with:
+      publish: true
+      source-ref: ${{ needs.resolve-release.outputs.source-ref }}
+      image-sha: ${{ needs.resolve-release.outputs.source-sha }}
     secrets: inherit
 
   # ---------------------------------------------------------------------------
@@ -48,10 +98,12 @@ jobs:
   # ---------------------------------------------------------------------------
   verify:
     name: Verify Images
-    needs: [build-core, build-sandboxes]
+    needs: [resolve-release, build-core, build-sandboxes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.source-ref }}
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -60,38 +112,18 @@ jobs:
         id: repo
         run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Smoke test core images
+      - name: Run smoke test suite
         run: |
           set -euo pipefail
           REGISTRY="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}"
-
-          echo "--- Testing gateway ---"
-          podman run --rm "${REGISTRY}/gateway:${{ github.sha }}" --version
-
-          echo "--- Testing supervisor ---"
-          podman run --rm "${REGISTRY}/supervisor:${{ github.sha }}" --version
-
-      - name: Smoke test sandbox base
-        run: |
-          set -euo pipefail
-          REGISTRY="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}"
-
-          echo "--- Testing sandboxes/base ---"
-          podman run --rm "${REGISTRY}/sandboxes/base:${{ github.sha }}" -c "
-            node --version && \
-            python3 --version && \
-            gh --version && \
-            claude --version && \
-            opencode --version && \
-            echo 'All tools verified'
-          "
+          ./scripts/verify-images.sh "${REGISTRY}" "${{ needs.resolve-release.outputs.source-sha }}"
 
   # ---------------------------------------------------------------------------
   # Tag images with release version
   # ---------------------------------------------------------------------------
   tag-release:
     name: Tag Release Images
-    needs: [build-core, build-sandboxes, verify]
+    needs: [resolve-release, build-core, build-sandboxes, verify]
     runs-on: ubuntu-latest
     steps:
       - name: Log in to GHCR
@@ -101,16 +133,12 @@ jobs:
         id: repo
         run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Compute semver
-        id: version
-        run: echo "semver=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
-
       - name: Tag all images with version and latest
         run: |
           set -euo pipefail
           REGISTRY="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}"
-          VERSION="${{ steps.version.outputs.semver }}"
-          SHA="${{ github.sha }}"
+          VERSION="${{ needs.resolve-release.outputs.semver }}"
+          SHA="${{ needs.resolve-release.outputs.source-sha }}"
 
           IMAGES=(
             "gateway"
@@ -126,14 +154,11 @@ jobs:
           for image in "${IMAGES[@]}"; do
             echo "Tagging ${REGISTRY}/${image}:${SHA} -> ${VERSION}, latest"
 
-            # Create version tag manifest from per-arch images
             for TAG in "${VERSION}" "latest"; do
-              podman manifest create "${REGISTRY}/${image}:${TAG}" \
-                "${REGISTRY}/${image}:${SHA}-amd64" \
-                "${REGISTRY}/${image}:${SHA}-arm64" 2>/dev/null \
-              && podman manifest push "${REGISTRY}/${image}:${TAG}" \
-                "docker://${REGISTRY}/${image}:${TAG}" \
-              || echo "Warning: could not tag ${image}:${TAG}"
+              podman manifest create "${REGISTRY}/${image}:${TAG}"
+              podman manifest add "${REGISTRY}/${image}:${TAG}" "${REGISTRY}/${image}:${SHA}-amd64"
+              podman manifest add "${REGISTRY}/${image}:${TAG}" "${REGISTRY}/${image}:${SHA}-arm64"
+              podman manifest push "${REGISTRY}/${image}:${TAG}" "docker://${REGISTRY}/${image}:${TAG}"
             done
           done
 
@@ -142,18 +167,16 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: Create GitHub Release
-    needs: tag-release
+    needs: [resolve-release, tag-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.source-ref }}
 
       - name: Lowercase image prefix
         id: repo
         run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute semver
-        id: version
-        run: echo "semver=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -170,16 +193,16 @@ jobs:
 
             ```
             # Core infrastructure (distroless)
-            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/gateway:${{ steps.version.outputs.semver }}
-            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/supervisor:${{ steps.version.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/gateway:${{ needs.resolve-release.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/supervisor:${{ needs.resolve-release.outputs.semver }}
 
             # Sandbox images (builder)
-            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/base:${{ steps.version.outputs.semver }}
-            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw:${{ steps.version.outputs.semver }}
-            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw-nvidia:${{ steps.version.outputs.semver }}
-            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/ollama:${{ steps.version.outputs.semver }}
-            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/gemini:${{ steps.version.outputs.semver }}
-            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/droid:${{ steps.version.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/base:${{ needs.resolve-release.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw:${{ needs.resolve-release.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw-nvidia:${{ needs.resolve-release.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/ollama:${{ needs.resolve-release.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/gemini:${{ needs.resolve-release.outputs.semver }}
+            podman pull ${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/droid:${{ needs.resolve-release.outputs.semver }}
             ```
 
             ### Base Images

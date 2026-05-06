@@ -22,8 +22,9 @@ All images are published to `ghcr.io/lobstertrap/openshell-hummingbird-images/`.
 
 ### Core Infrastructure
 
-These run the OpenShell control plane. Built on `quay.io/hummingbird/core-runtime`
-(distroless — no shell, minimal attack surface).
+These run the OpenShell control plane. Built on pinned
+`quay.io/hummingbird/core-runtime` distroless digests for a minimal runtime with
+no shell.
 
 | Image | Purpose |
 |-------|---------|
@@ -33,7 +34,8 @@ These run the OpenShell control plane. Built on `quay.io/hummingbird/core-runtim
 ### Sandbox Images
 
 Pre-configured environments for AI coding agents. Built on
-`quay.io/hummingbird/nodejs:22-builder` (includes bash + dnf for interactive use).
+the pinned `quay.io/hummingbird/nodejs:22-builder` Hummingbird builder image
+(includes bash + dnf for interactive use).
 
 | Image | Base | Purpose |
 |-------|------|---------|
@@ -92,6 +94,10 @@ All images are multi-arch (`linux/amd64` + `linux/arm64`).
 | `latest` | Most recent release |
 | `x.y.z` | Specific release version |
 | `<sha>` | Specific commit build |
+
+Pushes to `main` publish immutable SHA tags. The release workflow rebuilds from
+the release tag, verifies the SHA-tagged images, and then promotes that verified
+build to the semver and `latest` tags.
 
 ## Differences from Upstream
 

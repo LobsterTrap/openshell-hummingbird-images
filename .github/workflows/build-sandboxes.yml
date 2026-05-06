@@ -11,12 +11,46 @@ on:
     branches: [main]
     paths:
       - "sandboxes/**"
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      publish:
+        description: "Push per-arch images and the SHA manifests to GHCR"
+        required: false
+        type: boolean
+        default: false
+      source-ref:
+        description: "Repository ref to check out for image definitions"
+        required: false
+        type: string
+        default: ""
+      image-sha:
+        description: "Commit SHA tag to publish for the built images"
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Push per-arch images and the SHA manifests to GHCR"
+        required: false
+        type: boolean
+        default: false
+      source-ref:
+        description: "Repository ref to check out for image definitions"
+        required: false
+        type: string
+        default: ""
+      image-sha:
+        description: "Commit SHA tag to publish for the built images"
+        required: false
+        type: string
+        default: ""
 
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ${{ github.repository }}
+  SOURCE_REF: ${{ inputs.source-ref || github.ref }}
+  IMAGE_SHA: ${{ inputs.image-sha || github.sha }}
 
 permissions:
   contents: read
@@ -31,10 +65,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       base-changed: ${{ steps.changes.outputs.base_changed }}
-      sandboxes: ${{ steps.changes.outputs.sandboxes }}
+      build-base: ${{ steps.changes.outputs.build_base }}
+      publish-run: ${{ steps.changes.outputs.publish_run }}
+      tier1: ${{ steps.changes.outputs.tier1 }}
+      tier2: ${{ steps.changes.outputs.tier2 }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.SOURCE_REF }}
           fetch-depth: 0
 
       - name: Determine changed sandboxes
@@ -42,53 +80,104 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Rebuild everything for: workflow_dispatch, workflow_call (from release.yml),
-          # or tag pushes. When called via workflow_call on a tag push, github.event.before
-          # is the zero SHA, so we detect that case too.
+          ALL_TIER1='["openclaw","ollama","gemini","droid"]'
+          ALL_TIER2='["openclaw-nvidia"]'
           BEFORE="${{ github.event.before }}"
           IS_TAG="${{ startsWith(github.ref, 'refs/tags/') }}"
+          PUBLISH_RUN="false"
+          BUILD_ALL="false"
+          BASE_CHANGED="false"
+          BUILD_BASE="false"
+          TIER1="[]"
+          TIER2="[]"
+
+          if [ "${{ github.ref }}" = "refs/heads/main" ] || \
+             [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ] || \
+             [ "${{ inputs.publish }}" = "true" ]; then
+            PUBLISH_RUN="true"
+          fi
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
+             [ "${{ github.event_name }}" = "workflow_call" ] || \
              [ "$IS_TAG" = "true" ] || \
-             [ -z "$BEFORE" ] || \
-             [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+             { [ "${{ github.event_name }}" != "pull_request" ] && \
+               { [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; }; }; then
+            BUILD_ALL="true"
+          fi
+
+          if [ "$BUILD_ALL" = "true" ]; then
             BASE_CHANGED="true"
-            SANDBOXES=$(find sandboxes -mindepth 1 -maxdepth 1 -type d \
-              -exec test -f {}/Containerfile \; -print \
-              | xargs -I{} basename {} \
-              | grep -v '^base$' \
-              | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            TIER1="$ALL_TIER1"
+            TIER2="$ALL_TIER2"
           else
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               BASE_SHA="${{ github.event.pull_request.base.sha }}"
             else
-              BASE_SHA="${{ github.event.before }}"
+              BASE_SHA="$BEFORE"
             fi
 
-            CHANGED=$(git diff --name-only "$BASE_SHA" "${{ github.sha }}" -- sandboxes/)
+            HEAD_SHA="$(git rev-parse HEAD)"
+            CHANGED="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- sandboxes/ || true)"
 
             if echo "$CHANGED" | grep -q '^sandboxes/base/'; then
               BASE_CHANGED="true"
-              SANDBOXES=$(find sandboxes -mindepth 1 -maxdepth 1 -type d \
-                -exec test -f {}/Containerfile \; -print \
-                | xargs -I{} basename {} \
-                | grep -v '^base$' \
-                | jq -R -s -c 'split("\n") | map(select(length > 0))')
+              TIER1="$ALL_TIER1"
+              TIER2="$ALL_TIER2"
             else
-              BASE_CHANGED="false"
-              SANDBOXES=$(echo "$CHANGED" \
-                | cut -d'/' -f2 \
-                | sort -u \
-                | while read -r name; do
-                    if [ "$name" != "base" ] && [ -f "sandboxes/${name}/Containerfile" ]; then echo "$name"; fi
-                  done \
-                | jq -R -s -c 'split("\n") | map(select(length > 0))')
+              declare -a tier1_items=()
+              declare -a tier2_items=()
+              NEED_OPENCLAW="false"
+              NEED_OPENCLAW_NVIDIA="false"
+
+              while IFS= read -r path; do
+                [ -n "$path" ] || continue
+                name="$(echo "$path" | cut -d'/' -f2)"
+                case "$name" in
+                  base)
+                    BASE_CHANGED="true"
+                    ;;
+                  openclaw)
+                    tier1_items+=("openclaw")
+                    NEED_OPENCLAW_NVIDIA="true"
+                    ;;
+                  openclaw-nvidia)
+                    tier2_items+=("openclaw-nvidia")
+                    NEED_OPENCLAW="true"
+                    ;;
+                  ollama|gemini|droid)
+                    tier1_items+=("$name")
+                    ;;
+                esac
+              done <<< "$CHANGED"
+
+              if [ "$NEED_OPENCLAW" = "true" ]; then
+                tier1_items+=("openclaw")
+              fi
+              if [ "$NEED_OPENCLAW_NVIDIA" = "true" ]; then
+                tier2_items+=("openclaw-nvidia")
+              fi
+
+              TIER1="$(printf '%s\n' "${tier1_items[@]}" | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+              TIER2="$(printf '%s\n' "${tier2_items[@]}" | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')"
             fi
           fi
 
+          if [ "$BASE_CHANGED" = "true" ] || [ "$BUILD_ALL" = "true" ]; then
+            BUILD_BASE="true"
+          elif [ "$PUBLISH_RUN" = "true" ] && { [ "$TIER1" != "[]" ] || [ "$TIER2" != "[]" ]; }; then
+            BUILD_BASE="true"
+          fi
+
           echo "base_changed=${BASE_CHANGED}" >> "$GITHUB_OUTPUT"
-          echo "sandboxes=${SANDBOXES}" >> "$GITHUB_OUTPUT"
+          echo "build_base=${BUILD_BASE}" >> "$GITHUB_OUTPUT"
+          echo "publish_run=${PUBLISH_RUN}" >> "$GITHUB_OUTPUT"
+          echo "tier1=${TIER1}" >> "$GITHUB_OUTPUT"
+          echo "tier2=${TIER2}" >> "$GITHUB_OUTPUT"
           echo "Base changed: ${BASE_CHANGED}"
-          echo "Will build: ${SANDBOXES}"
+          echo "Build base: ${BUILD_BASE}"
+          echo "Publish run: ${PUBLISH_RUN}"
+          echo "Tier 1: ${TIER1}"
+          echo "Tier 2: ${TIER2}"
 
   # ---------------------------------------------------------------------------
   # Build base sandbox image (multi-arch via podman manifest)
@@ -96,147 +185,131 @@ jobs:
   build-base:
     name: Build base
     needs: detect-changes
-    if: needs.detect-changes.outputs.base-changed == 'true'
+    if: needs.detect-changes.outputs.build-base == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
 
       - name: Lowercase image prefix
         id: repo
         run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU for multi-arch
+        if: needs.detect-changes.outputs.publish-run == 'true'
         run: sudo apt-get install -y qemu-user-static
 
       - name: Log in to GHCR
+        if: needs.detect-changes.outputs.publish-run == 'true'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Compute tags
         id: tags
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/base"
-          echo "sha_tag=${IMAGE}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
-          echo "latest_tag=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
 
-      - name: Build multi-arch manifest
+      - name: Build image
         run: |
           set -euo pipefail
           IMAGE="${{ steps.tags.outputs.image }}"
-          SHA="${{ github.sha }}"
+          SHA="${{ env.IMAGE_SHA }}"
 
-          # Build per-arch
-          for ARCH in amd64 arm64; do
+          if [ "${{ needs.detect-changes.outputs.publish-run }}" = "true" ]; then
+            for ARCH in amd64 arm64; do
+              podman build \
+                --platform "linux/${ARCH}" \
+                -f sandboxes/base/Containerfile \
+                -t "${IMAGE}:${SHA}-${ARCH}" \
+                sandboxes/base/
+            done
+          else
             podman build \
-              --platform "linux/${ARCH}" \
               -f sandboxes/base/Containerfile \
-              -t "${IMAGE}:${SHA}-${ARCH}" \
+              -t "openshell-base:${SHA}" \
               sandboxes/base/
-          done
+          fi
 
       - name: Push images
-        if: github.ref == 'refs/heads/main'
+        if: needs.detect-changes.outputs.publish-run == 'true'
         run: |
           set -euo pipefail
           IMAGE="${{ steps.tags.outputs.image }}"
-          SHA="${{ github.sha }}"
+          SHA="${{ env.IMAGE_SHA }}"
 
-          # Push per-arch images
           for ARCH in amd64 arm64; do
             podman push "${IMAGE}:${SHA}-${ARCH}"
           done
 
-          # Create and push multi-arch manifests
-          for TAG in "${SHA}" "latest"; do
-            podman manifest create "${IMAGE}:${TAG}"
-            podman manifest add "${IMAGE}:${TAG}" "${IMAGE}:${SHA}-amd64"
-            podman manifest add "${IMAGE}:${TAG}" "${IMAGE}:${SHA}-arm64"
-            podman manifest push "${IMAGE}:${TAG}" "docker://${IMAGE}:${TAG}"
-          done
+          podman manifest create "${IMAGE}:${SHA}"
+          podman manifest add "${IMAGE}:${SHA}" "${IMAGE}:${SHA}-amd64"
+          podman manifest add "${IMAGE}:${SHA}" "${IMAGE}:${SHA}-arm64"
+          podman manifest push "${IMAGE}:${SHA}" "docker://${IMAGE}:${SHA}"
 
   # ---------------------------------------------------------------------------
   # Build derivative sandbox images (matrix)
   # ---------------------------------------------------------------------------
-  build:
+  build-tier1:
     name: Build ${{ matrix.sandbox }}
     needs: [detect-changes, build-base]
     if: |
       always() &&
       needs.detect-changes.result == 'success' &&
       (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
-      needs.detect-changes.outputs.sandboxes != '[]'
+      needs.detect-changes.outputs.tier1 != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        sandbox: ${{ fromJson(needs.detect-changes.outputs.sandboxes) }}
+        sandbox: ${{ fromJson(needs.detect-changes.outputs.tier1) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
 
       - name: Lowercase image prefix
         id: repo
         run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU for multi-arch
+        if: needs.detect-changes.outputs.publish-run == 'true'
         run: sudo apt-get install -y qemu-user-static
 
       - name: Log in to GHCR
+        if: needs.detect-changes.outputs.publish-run == 'true'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Start local registry (PR only)
-        if: github.ref != 'refs/heads/main'
+      - name: Start local registry (non-publish only)
+        if: needs.detect-changes.outputs.publish-run != 'true'
         run: podman run -d -p 5000:5000 --name registry registry:2
 
-      - name: Build base image locally (PR only)
-        if: github.ref != 'refs/heads/main'
+      - name: Build base image locally (non-publish only)
+        if: needs.detect-changes.outputs.publish-run != 'true'
         run: |
           podman build \
             -f sandboxes/base/Containerfile \
-            -t localhost:5000/sandboxes/base:latest \
+            -t localhost:5000/sandboxes/base:${{ env.IMAGE_SHA }} \
             sandboxes/base/
-          podman push localhost:5000/sandboxes/base:latest --tls-verify=false
-
-      - name: Determine parent sandbox
-        id: parent
-        run: |
-          set -euo pipefail
-          DEFAULT_BASE=$(grep '^ARG BASE_IMAGE=' "sandboxes/${{ matrix.sandbox }}/Containerfile" | head -1 | cut -d= -f2-)
-          PARENT=$(echo "$DEFAULT_BASE" | sed -n 's|.*/sandboxes/\([^:]*\).*|\1|p')
-          if [ -z "$PARENT" ]; then
-            PARENT="base"
-          fi
-          echo "sandbox=$PARENT" >> "$GITHUB_OUTPUT"
-          echo "Parent for ${{ matrix.sandbox }}: $PARENT"
-
-      - name: Build parent sandbox locally (PR only)
-        if: github.ref != 'refs/heads/main' && steps.parent.outputs.sandbox != 'base'
-        run: |
-          podman build \
-            --build-arg BASE_IMAGE=localhost:5000/sandboxes/base:latest \
-            -f sandboxes/${{ steps.parent.outputs.sandbox }}/Containerfile \
-            -t localhost:5000/sandboxes/${{ steps.parent.outputs.sandbox }}:latest \
-            sandboxes/${{ steps.parent.outputs.sandbox }}/
-          podman push localhost:5000/sandboxes/${{ steps.parent.outputs.sandbox }}:latest --tls-verify=false
+          podman push localhost:5000/sandboxes/base:${{ env.IMAGE_SHA }} --tls-verify=false
 
       - name: Set BASE_IMAGE
         id: base
         run: |
-          PARENT="${{ steps.parent.outputs.sandbox }}"
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            echo "image=${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/${PARENT}:latest" >> "$GITHUB_OUTPUT"
+          if [ "${{ needs.detect-changes.outputs.publish-run }}" = "true" ]; then
+            echo "image=${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/base:${{ env.IMAGE_SHA }}" >> "$GITHUB_OUTPUT"
           else
-            echo "image=localhost:5000/sandboxes/${PARENT}:latest" >> "$GITHUB_OUTPUT"
+            echo "image=localhost:5000/sandboxes/base:${{ env.IMAGE_SHA }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build image
         run: |
           set -euo pipefail
           IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/${{ matrix.sandbox }}"
-          SHA="${{ github.sha }}"
+          SHA="${{ env.IMAGE_SHA }}"
           BASE="${{ steps.base.outputs.image }}"
 
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            # Multi-arch build for main
+          if [ "${{ needs.detect-changes.outputs.publish-run }}" = "true" ]; then
             for ARCH in amd64 arm64; do
               podman build \
                 --platform "linux/${ARCH}" \
@@ -246,7 +319,6 @@ jobs:
                 sandboxes/${{ matrix.sandbox }}/
             done
           else
-            # amd64-only for PRs
             podman build \
               --build-arg "BASE_IMAGE=${BASE}" \
               -f sandboxes/${{ matrix.sandbox }}/Containerfile \
@@ -255,21 +327,118 @@ jobs:
           fi
 
       - name: Push images
-        if: github.ref == 'refs/heads/main'
+        if: needs.detect-changes.outputs.publish-run == 'true'
         run: |
           set -euo pipefail
           IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/${{ matrix.sandbox }}"
-          SHA="${{ github.sha }}"
+          SHA="${{ env.IMAGE_SHA }}"
 
-          # Push per-arch images
           for ARCH in amd64 arm64; do
             podman push "${IMAGE}:${SHA}-${ARCH}"
           done
 
-          # Create and push multi-arch manifests
-          for TAG in "${SHA}" "latest"; do
-            podman manifest create "${IMAGE}:${TAG}"
-            podman manifest add "${IMAGE}:${TAG}" "${IMAGE}:${SHA}-amd64"
-            podman manifest add "${IMAGE}:${TAG}" "${IMAGE}:${SHA}-arm64"
-            podman manifest push "${IMAGE}:${TAG}" "docker://${IMAGE}:${TAG}"
+          podman manifest create "${IMAGE}:${SHA}"
+          podman manifest add "${IMAGE}:${SHA}" "${IMAGE}:${SHA}-amd64"
+          podman manifest add "${IMAGE}:${SHA}" "${IMAGE}:${SHA}-arm64"
+          podman manifest push "${IMAGE}:${SHA}" "docker://${IMAGE}:${SHA}"
+
+  build-tier2:
+    name: Build ${{ matrix.sandbox }}
+    needs: [detect-changes, build-base, build-tier1]
+    if: |
+      always() &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
+      (needs.build-tier1.result == 'success' || needs.build-tier1.result == 'skipped') &&
+      needs.detect-changes.outputs.tier2 != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sandbox: ${{ fromJson(needs.detect-changes.outputs.tier2) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+
+      - name: Lowercase image prefix
+        id: repo
+        run: echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU for multi-arch
+        if: needs.detect-changes.outputs.publish-run == 'true'
+        run: sudo apt-get install -y qemu-user-static
+
+      - name: Log in to GHCR
+        if: needs.detect-changes.outputs.publish-run == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Start local registry (non-publish only)
+        if: needs.detect-changes.outputs.publish-run != 'true'
+        run: podman run -d -p 5000:5000 --name registry registry:2
+
+      - name: Build local parent chain (non-publish only)
+        if: needs.detect-changes.outputs.publish-run != 'true'
+        run: |
+          set -euo pipefail
+          podman build \
+            -f sandboxes/base/Containerfile \
+            -t localhost:5000/sandboxes/base:${{ env.IMAGE_SHA }} \
+            sandboxes/base/
+          podman push localhost:5000/sandboxes/base:${{ env.IMAGE_SHA }} --tls-verify=false
+
+          podman build \
+            --build-arg BASE_IMAGE=localhost:5000/sandboxes/base:${{ env.IMAGE_SHA }} \
+            -f sandboxes/openclaw/Containerfile \
+            -t localhost:5000/sandboxes/openclaw:${{ env.IMAGE_SHA }} \
+            sandboxes/openclaw/
+          podman push localhost:5000/sandboxes/openclaw:${{ env.IMAGE_SHA }} --tls-verify=false
+
+      - name: Set BASE_IMAGE
+        id: base
+        run: |
+          if [ "${{ needs.detect-changes.outputs.publish-run }}" = "true" ]; then
+            echo "image=${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/openclaw:${{ env.IMAGE_SHA }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=localhost:5000/sandboxes/openclaw:${{ env.IMAGE_SHA }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/${{ matrix.sandbox }}"
+          SHA="${{ env.IMAGE_SHA }}"
+          BASE="${{ steps.base.outputs.image }}"
+
+          if [ "${{ needs.detect-changes.outputs.publish-run }}" = "true" ]; then
+            for ARCH in amd64 arm64; do
+              podman build \
+                --platform "linux/${ARCH}" \
+                --build-arg "BASE_IMAGE=${BASE}" \
+                -f sandboxes/${{ matrix.sandbox }}/Containerfile \
+                -t "${IMAGE}:${SHA}-${ARCH}" \
+                sandboxes/${{ matrix.sandbox }}/
+            done
+          else
+            podman build \
+              --build-arg "BASE_IMAGE=${BASE}" \
+              -f sandboxes/${{ matrix.sandbox }}/Containerfile \
+              -t "${IMAGE}:${SHA}" \
+              sandboxes/${{ matrix.sandbox }}/
+          fi
+
+      - name: Push images
+        if: needs.detect-changes.outputs.publish-run == 'true'
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/sandboxes/${{ matrix.sandbox }}"
+          SHA="${{ env.IMAGE_SHA }}"
+
+          for ARCH in amd64 arm64; do
+            podman push "${IMAGE}:${SHA}-${ARCH}"
           done
+
+          podman manifest create "${IMAGE}:${SHA}"
+          podman manifest add "${IMAGE}:${SHA}" "${IMAGE}:${SHA}-amd64"
+          podman manifest add "${IMAGE}:${SHA}" "${IMAGE}:${SHA}-arm64"
+          podman manifest push "${IMAGE}:${SHA}" "docker://${IMAGE}:${SHA}"

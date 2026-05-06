@@ -7,11 +7,47 @@ on:
     branches: [main]
     paths:
       - "core/**"
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      openshell-ref:
+        description: "NVIDIA/OpenShell git ref to build from (tag, branch, or SHA)"
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: "Push per-arch images and the SHA manifest to GHCR"
+        required: false
+        type: boolean
+        default: false
+      source-ref:
+        description: "Repository ref to check out for image definitions"
+        required: false
+        type: string
+        default: ""
+      image-sha:
+        description: "Commit SHA tag to publish for the built images"
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       openshell-ref:
         description: "NVIDIA/OpenShell git ref to build from (tag, branch, or SHA)"
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: "Push per-arch images and the SHA manifest to GHCR"
+        required: false
+        type: boolean
+        default: false
+      source-ref:
+        description: "Repository ref to check out for image definitions"
+        required: false
+        type: string
+        default: ""
+      image-sha:
+        description: "Commit SHA tag to publish for the built images"
         required: false
         type: string
         default: ""
@@ -23,6 +59,8 @@ env:
   OPENSHELL_DEFAULT_REF: "v0.0.36"
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ${{ github.repository }}
+  SOURCE_REF: ${{ inputs.source-ref || github.ref }}
+  IMAGE_SHA: ${{ inputs.image-sha || github.sha }}
 
 permissions:
   contents: read
@@ -127,6 +165,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
 
       - name: Lowercase image prefix
         id: repo
@@ -149,7 +189,7 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/${{ matrix.component }}"
-          TAG="${{ github.sha }}-${{ matrix.arch }}"
+          TAG="${{ env.IMAGE_SHA }}-${{ matrix.arch }}"
           podman build \
             --platform linux/${{ matrix.arch }} \
             -f core/${{ matrix.component }}/Containerfile \
@@ -157,11 +197,11 @@ jobs:
             .
 
       - name: Push image
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
         run: |
           set -euo pipefail
           IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/${{ matrix.component }}"
-          TAG="${{ github.sha }}-${{ matrix.arch }}"
+          TAG="${{ env.IMAGE_SHA }}-${{ matrix.arch }}"
           podman push "${IMAGE}:${TAG}"
 
   # ---------------------------------------------------------------------------
@@ -170,7 +210,7 @@ jobs:
   merge-manifests:
     name: Merge ${{ matrix.component }} manifest
     needs: build-images
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -187,20 +227,9 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/${{ matrix.component }}"
-          SHA="${{ github.sha }}"
+          SHA="${{ env.IMAGE_SHA }}"
 
           podman manifest create "${IMAGE}:${SHA}"
           podman manifest add "${IMAGE}:${SHA}" "${IMAGE}:${SHA}-amd64"
           podman manifest add "${IMAGE}:${SHA}" "${IMAGE}:${SHA}-arm64"
           podman manifest push "${IMAGE}:${SHA}" "docker://${IMAGE}:${SHA}"
-
-      - name: Tag as latest
-        run: |
-          set -euo pipefail
-          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.image_prefix }}/${{ matrix.component }}"
-          SHA="${{ github.sha }}"
-
-          podman manifest create "${IMAGE}:latest"
-          podman manifest add "${IMAGE}:latest" "${IMAGE}:${SHA}-amd64"
-          podman manifest add "${IMAGE}:latest" "${IMAGE}:${SHA}-arm64"
-          podman manifest push "${IMAGE}:latest" "docker://${IMAGE}:latest"

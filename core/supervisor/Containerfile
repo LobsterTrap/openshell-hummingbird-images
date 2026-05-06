@@ -12,10 +12,13 @@
 # Build (after staging binary):
 #   podman build -f core/supervisor/Containerfile -t supervisor .
 
+ARG HUMMINGBIRD_CORE_RUNTIME_BUILDER=quay.io/hummingbird/core-runtime@sha256:0b8d9bedb57a38c85f680ab05e3e84f0f8c3d04b4bdd1e571a83a58e62ed5551
+ARG HUMMINGBIRD_CORE_RUNTIME=quay.io/hummingbird/core-runtime@sha256:63cca59f158e8b262a516997f9419047501b50c5f4729a2479b89de9e881571b
+
 # ---------------------------------------------------------------------------
 # Builder stage: create openshell user (distroless has no useradd)
 # ---------------------------------------------------------------------------
-FROM quay.io/hummingbird/core-runtime:latest-builder AS usersetup
+FROM ${HUMMINGBIRD_CORE_RUNTIME_BUILDER} AS usersetup
 
 # Hummingbird builder images default to non-root; need root for useradd
 USER root
@@ -24,7 +27,7 @@ RUN useradd --create-home --user-group --uid 1001 openshell
 # ---------------------------------------------------------------------------
 # Final supervisor image (distroless)
 # ---------------------------------------------------------------------------
-FROM quay.io/hummingbird/core-runtime:latest
+FROM ${HUMMINGBIRD_CORE_RUNTIME}
 
 ARG TARGETARCH
 

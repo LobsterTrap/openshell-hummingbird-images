@@ -18,12 +18,37 @@
 set -euo pipefail
 
 UPSTREAM_REPO="NVIDIA/OpenShell-Community"
-UPSTREAM_REF="${1:-main}"
+UPSTREAM_REF="main"
 WORK_DIR=$(mktemp -d)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 trap 'rm -rf "$WORK_DIR"' EXIT
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --ref)
+            if [ "$#" -lt 2 ]; then
+                echo "Error: --ref requires a value" >&2
+                exit 1
+            fi
+            UPSTREAM_REF="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: ./scripts/sync-upstream.sh [--ref REF] [REF]"
+            exit 0
+            ;;
+        -*)
+            echo "Error: unknown option: $1" >&2
+            exit 1
+            ;;
+        *)
+            UPSTREAM_REF="$1"
+            shift
+            ;;
+    esac
+done
 
 echo "Syncing from ${UPSTREAM_REPO}@${UPSTREAM_REF}..."
 

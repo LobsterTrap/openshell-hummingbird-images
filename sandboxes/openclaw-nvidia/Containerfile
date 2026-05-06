@@ -32,7 +32,7 @@ RUN chmod +x /usr/local/bin/openclaw-nvidia-start
 COPY policy-proxy.js /usr/local/lib/policy-proxy.js
 COPY inference-options.js /usr/local/lib/inference-options.js
 COPY proto/ /usr/local/lib/nemoclaw-proto/
-RUN npm install -g @grpc/grpc-js @grpc/proto-loader js-yaml
+RUN npm install -g @grpc/grpc-js@1.14.3 @grpc/proto-loader@0.8.0 js-yaml@4.1.1
 
 # Fix @hono/node-server authorization bypass
 RUN npm install -g @hono/node-server@1.19.11

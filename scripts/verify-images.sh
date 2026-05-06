@@ -69,6 +69,8 @@ if podman pull "$BASE" > /dev/null 2>&1; then
     run_test "$BASE" "git --version" -c "git --version"
     run_test "$BASE" "uv --version" -c "uv --version"
     run_test "$BASE" "opencode --version" -c "opencode --version"
+    run_test "$BASE" "codex --version" -c "codex --version"
+    run_test "$BASE" "copilot --version" -c "copilot --version"
     run_test "$BASE" "claude --version" -c "claude --version"
     run_test "$BASE" "policy.yaml exists" -c "test -f /etc/openshell/policy.yaml"
     run_test "$BASE" "sandbox user exists" -c "id sandbox"
