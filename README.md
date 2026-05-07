@@ -76,6 +76,24 @@ podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/base:late
 podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw:latest
 ```
 
+### Pull References
+
+Use the following registry URLs with `podman pull`:
+
+| Image | Registry URL | Example pull |
+|-------|--------------|--------------|
+| `gateway` | `ghcr.io/lobstertrap/openshell-hummingbird-images/gateway` | `podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/gateway:<tag>` |
+| `supervisor` | `ghcr.io/lobstertrap/openshell-hummingbird-images/supervisor` | `podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/supervisor:<tag>` |
+| `sandboxes/base` | `ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/base` | `podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/base:<tag>` |
+| `sandboxes/openclaw` | `ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw` | `podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw:<tag>` |
+| `sandboxes/openclaw-nvidia` | `ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw-nvidia` | `podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/openclaw-nvidia:<tag>` |
+| `sandboxes/ollama` | `ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/ollama` | `podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/ollama:<tag>` |
+| `sandboxes/gemini` | `ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/gemini` | `podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/gemini:<tag>` |
+| `sandboxes/droid` | `ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/droid` | `podman pull ghcr.io/lobstertrap/openshell-hummingbird-images/sandboxes/droid:<tag>` |
+
+`<tag>` can be any of the published tag forms documented below: `latest`, a
+release tag like `x.y.z`, or an immutable commit SHA from a `main` build.
+
 Use with OpenShell CLI (point to this registry):
 
 ```bash
